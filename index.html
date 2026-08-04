@@ -1203,7 +1203,7 @@ function onDown(ev){
     if(a==="reset") resetPlayer();
     if(a==="menu") pressed.MENU = true;
     if(a==="map")  pressed.MAP = true;
-    if(a==="panel") document.body.classList.toggle("panel-open");
+    if(a==="panel" && DEV) document.body.classList.toggle("panel-open");
     return;
   }
   const el = keyElAt(ev.clientX, ev.clientY);
@@ -2185,7 +2185,11 @@ function boneDraw(b){
 //  능력 개방 — 메트로배니아식 진행
 //  슬라이더 값은 "설계상 최대치", 여기 플래그가 "현재 개방분"
 // ────────────────────────────────────────────────────────────────
-const ABIL = { dash:false, doubleJump:false, tripleJump:false };
+//  DEV      손맛 조정 패널을 켤지 (배포판은 false)
+//  ABIL_ALL 이동 능력을 처음부터 다 주고 시작할지 (시험용, 나중에 false로)
+const DEV = false;
+const ABIL_ALL = true;
+const ABIL = { dash:ABIL_ALL, doubleJump:ABIL_ALL, tripleJump:ABIL_ALL };
 const ABIL_INFO = {
   dash:       { name:"질풍",   desc:"같은 방향 두 번 연타로 돌진", col:"#E0577F" },
   doubleJump: { name:"부유",   desc:"공중에서 한 번 더 도약",        col:"#8FE3E0" },
@@ -6834,6 +6838,17 @@ resetPlayer();
 spawnItems();
 syncAbilityBoxes();
 cam.x = px(player.x)-SCREEN_W/2; cam.y = px(player.y)-SCREEN_H/2;
+// 배포판이면 맨 마지막에 조정 패널을 걷어냅니다.
+// 앞에서 지우면 패널 안 버튼을 연결하려다 스크립트가 통째로 멈춥니다.
+if(!DEV){                                   // 배포판 — 조정 패널을 통째로 뺍니다
+  const drop = el => { if(el && el.remove) el.remove();
+                       else if(el && el.parentNode) el.parentNode.removeChild(el); };
+  drop(document.getElementById("panel"));
+  const btns = document.querySelectorAll ? document.querySelectorAll('[data-act="panel"]') : [];
+  for(const k of btns) drop(k);
+  if(document.body && document.body.classList) document.body.classList.remove("panel-open");
+}
+
 requestAnimationFrame(loop);
 </script>
 </body>
