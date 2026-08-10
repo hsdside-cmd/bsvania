@@ -4945,6 +4945,9 @@ function hotAt(){
 
 addEventListener("keydown",ev=>{
   audioInit();                       // 브라우저 정책상 첫 입력에서만 열립니다
+  //  이름·아이디를 치는 중에는 글쇠가 전부 입력칸 몫입니다.
+  //  안 그러면 W·A·S·D·J·K·L 이 이동과 공격으로 새어 나갑니다.
+  if(typeof TYPE !== "undefined" && TYPE.on) return;
   if(ev.code==="KeyM"){ audioToggle(); return; }
   if(ev.code==="Tab"){ ev.preventDefault(); pressed.MAP = true; return; }
   if(ev.code==="F1"){ ev.preventDefault(); debugOn=!debugOn; return; }
@@ -4955,7 +4958,9 @@ addEventListener("keydown",ev=>{
   if(!keys[k]) pressed[k]=true;
   keys[k]=true;
 });
-addEventListener("keyup",ev=>{ const k=CODE[ev.code]; if(k){ev.preventDefault(); keys[k]=false;} });
+addEventListener("keyup",ev=>{
+  if(typeof TYPE !== "undefined" && TYPE.on) return;
+  const k=CODE[ev.code]; if(k){ev.preventDefault(); keys[k]=false;} });
 addEventListener("blur",()=>{for(const k in keys)keys[k]=false;});
 
 // ────────────────────────────────────────────────────────────────
@@ -17442,12 +17447,269 @@ function resetPlayer(){
   cam.y = (WORLD_H<SCREEN_H) ? (WORLD_H-SCREEN_H)
         : Math.max(0, Math.min(WORLD_H-SCREEN_H, px(player.y)+player.h/2-SCREEN_H/2-8));
 }
+
+// ── 직접 타이핑 입력 ───────────────────────────────────────────
+//  캔버스에는 글자를 그릴 수만 있고 한글 조합은 받을 수 없습니다.
+//  그래서 화면 밖에 진짜 <input> 하나를 두고 거기로 키를 받습니다.
+//  (한글은 조합 과정이 있어서 keydown 만으로는 제대로 못 받습니다)
+const TYPE = {
+  el: null, on: false, kind: "text", max: 12,
+  onDone: null, onCancel: null, onMove: null,
+};
+function typeEl(){
+  if(TYPE.el) return TYPE.el;
+  const el = document.createElement("input");
+  el.type = "text";
+  el.autocomplete = "off"; el.autocapitalize = "off"; el.spellcheck = false;
+  //  화면에는 보이지 않지만 포커스는 받아야 합니다 (display:none 이면 못 받습니다)
+  el.style.cssText = "position:fixed;left:-9999px;top:0;width:200px;opacity:0;" +
+                     "pointer-events:none;font-size:16px;";
+  document.body.appendChild(el);
+  el.addEventListener("keydown", (ev)=>{
+    if(!TYPE.on) return;
+    if(ev.isComposing) return;                 // 한글 조합 중에는 건드리지 않습니다
+    if(ev.key === "Enter"){ ev.preventDefault(); typeDone(); }
+    else if(ev.key === "Escape"){ ev.preventDefault(); typeCancel(); }
+    else if(ev.key === "Tab"){ ev.preventDefault(); typeDone(true); }
+    else if(ev.key === "ArrowUp" || ev.key === "ArrowDown"){
+      //  칸 사이를 오갑니다. 글자 사이 이동은 ← → 로 합니다.
+      ev.preventDefault();
+      if(TYPE.onMove) TYPE.onMove(ev.key === "ArrowDown" ? 1 : -1);
+    }
+  });
+  el.addEventListener("blur", ()=>{ if(TYPE.on) setTimeout(()=>{ if(TYPE.on) el.focus(); }, 0); });
+  TYPE.el = el;
+  return el;
+}
+function typeStart(opt){
+  const el = typeEl();
+  TYPE.on = true;
+  TYPE.kind = (opt && opt.kind) || "text";
+  TYPE.max  = (opt && opt.max)  || 12;
+  TYPE.onDone   = (opt && opt.onDone)   || null;
+  TYPE.onCancel = (opt && opt.onCancel) || null;
+  TYPE.onMove   = (opt && opt.onMove)   || null;
+  el.type = (TYPE.kind === "password") ? "password" : "text";
+  el.maxLength = TYPE.max;
+  el.value = (opt && opt.value) || "";
+  try{ el.focus(); el.setSelectionRange(el.value.length, el.value.length); }catch(e){}
+}
+function typeValue(){
+  if(!TYPE.el) return "";
+  let v = TYPE.el.value || "";
+  if(TYPE.kind === "id") v = v.replace(/[^0-9A-Za-z_]/g, "").toLowerCase();
+  if(v.length > TYPE.max) v = v.slice(0, TYPE.max);
+  if(TYPE.el.value !== v) TYPE.el.value = v;
+  return v;
+}
+function typeStop(){
+  TYPE.on = false;
+  if(TYPE.el){ try{ TYPE.el.blur(); }catch(e){} }
+}
+function typeDone(next){
+  const v = typeValue(); const f = TYPE.onDone;
+  typeStop(); if(f) f(v, !!next);
+}
+function typeCancel(){
+  const f = TYPE.onCancel; typeStop(); if(f) f();
+}
+//  화면에 그리는 입력칸 — 글자와 깜빡이는 커서
+function drawField(x, y, w, h, text, focused, hint, mask){
+  ctx.fillStyle = focused ? "rgba(143,227,224,.10)" : "rgba(9,12,20,.55)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = focused ? "#8FE3E0" : "#3E4660";
+  ctx.lineWidth = 1; ctx.strokeRect(x+.5, y+.5, w-1, h-1);
+  const shown = mask ? "*".repeat(text.length) : text;
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.font = "9px "+FONT;
+  if(!shown.length && hint){
+    ctx.fillStyle = "#3E4660"; ctx.fillText(hint, x+6, y+(h-9)/2);
+  } else {
+    ctx.fillStyle = "#DCE4F4"; ctx.fillText(shown, x+6, y+(h-9)/2);
+  }
+  if(focused && ((frame>>4)&1)){
+    const wgt = ctx.measureText(shown).width;
+    ctx.fillStyle = "#8FE3E0";
+    ctx.fillRect(x+6+wgt+1, y+(h-9)/2, 1, 9);
+  }
+  ctx.textAlign = "center";
+}
+
+
+// ── 계정 · 저장소 ──────────────────────────────────────────────
+//  슬롯을 없애고 계정 하나에 캐릭터 하나를 답니다.
+//  ACCOUNT.id 가 정해지면 그 사람의 저장칸을 씁니다.
+//
+//  저장 방식 두 가지
+//    · local — 이 브라우저에만 (파이어베이스 설정이 없거나 접속 실패 시)
+//    · cloud — 파이어베이스. 어디서 접속해도 같은 저장을 씁니다
+//
+//  ※ 파이어베이스를 쓰려면 아래 FIREBASE_CONFIG 를 채워야 합니다.
+//    비어 있으면 자동으로 local 로만 돕니다.
+const FIREBASE_CONFIG = {
+  apiKey:            "AIzaSyAacGX5hjKkKg14A4x2O1EExFXI9aVaz28",
+  authDomain:        "oksang-3ba01.firebaseapp.com",
+  projectId:         "oksang-3ba01",
+  storageBucket:     "oksang-3ba01.firebasestorage.app",
+  messagingSenderId: "691905134840",
+  appId:             "1:691905134840:web:428d310a92dc8a5fe8bb0d",
+  //  실시간 데이터베이스 주소 — 콘솔에 뜬 값과 다르면 여기만 고치면 됩니다
+  databaseURL:       "https://oksang-3ba01-default-rtdb.asia-southeast1.firebasedatabase.app",
+};
+
+const ACCOUNT = { id:null, mode:"local", uid:null, busy:false, err:null };
+const SAVE_KEY_OF = id => "oksang_acc_" + String(id||"guest").toLowerCase();
+
+//  아이디를 파이어베이스 이메일 주소로 바꿔 씁니다 (아이디만 받고 싶어서)
+const idToEmail = id => String(id).toLowerCase() + "@oksang.local";
+
+const CLOUD = {
+  ready: false, failed: false, auth: null, db: null,
+  //  SDK 를 불러옵니다. 설정이 없으면 조용히 넘어가고 local 로 돕니다.
+  async init(){
+    if(!FIREBASE_CONFIG || this.failed) return false;
+    if(this.ready) return true;
+    try{
+      const appMod  = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js");
+      const authMod = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js");
+      const dbMod   = await import("https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js");
+      const app = appMod.initializeApp(FIREBASE_CONFIG);
+      this.auth = authMod.getAuth(app);
+      this.db   = dbMod.getDatabase(app);
+      this.A = authMod; this.D = dbMod;
+      this.ready = true;
+      return true;
+    }catch(e){
+      //  한 번 실패하면 다시 시도하지 않습니다 (로그인할 때마다 기다리지 않게)
+      this.failed = true;
+      console.warn("파이어베이스를 불러오지 못했습니다. 이 브라우저에만 저장합니다.",
+                   (e && e.message) || e);
+      return false;
+    }
+  },
+  async signUp(id, pw){
+    if(!await this.init()) throw new Error("offline");
+    const r = await this.A.createUserWithEmailAndPassword(this.auth, idToEmail(id), pw);
+    return r.user.uid;
+  },
+  async signIn(id, pw){
+    if(!await this.init()) throw new Error("offline");
+    const r = await this.A.signInWithEmailAndPassword(this.auth, idToEmail(id), pw);
+    return r.user.uid;
+  },
+  //  저장 뭉치는 통째로 글자로 바꿔 한 칸에 넣습니다.
+  //  (실시간 데이터베이스는 빈 배열·undefined 를 지워버려서, 그대로 넣으면
+  //   방문 기록 같은 게 조용히 사라집니다)
+  async put(uid, data){
+    if(!this.ready) return false;
+    await this.D.set(this.D.ref(this.db, "saves/" + uid),
+                     { data: JSON.stringify(data), at: Date.now() });
+    return true;
+  },
+  async get(uid){
+    if(!this.ready) return null;
+    const snap = await this.D.get(this.D.ref(this.db, "saves/" + uid));
+    if(!snap.exists()) return null;
+    const v = snap.val();
+    try{ return JSON.parse(v && v.data); }catch(e){ return null; }
+  },
+};
+
+//  실제 읽고 쓰는 창구 — 어느 방식이든 여기만 거칩니다
+const STORE = {
+  write(d){
+    try{ localStorage.setItem(SAVE_KEY_OF(ACCOUNT.id), JSON.stringify(d)); }catch(e){}
+    if(ACCOUNT.mode === "cloud" && ACCOUNT.uid)
+      CLOUD.put(ACCOUNT.uid, d).catch(e=>console.warn("클라우드 저장 실패", e));
+    return true;
+  },
+  read(){
+    try{ return JSON.parse(localStorage.getItem(SAVE_KEY_OF(ACCOUNT.id)) || "null"); }
+    catch(e){ return null; }
+  },
+  has(){ return !!this.read(); },
+  clear(){
+    try{ localStorage.removeItem(SAVE_KEY_OF(ACCOUNT.id)); }catch(e){}
+    if(ACCOUNT.mode === "cloud" && ACCOUNT.uid)
+      CLOUD.put(ACCOUNT.uid, null).catch(()=>{});
+  },
+};
+
+//  이 브라우저 전용 비밀번호 확인용 지문. 암호화가 아니라 대조용입니다.
+function localPwHash(id, pw){
+  const src = String(id).toLowerCase() + "\u0001" + String(pw);
+  let a = 0x811c9dc5, b = 0x01000193;
+  for(let i=0;i<src.length;i++){
+    a ^= src.charCodeAt(i); a = Math.imul(a, b) >>> 0;
+    b = (Math.imul(b ^ src.charCodeAt(i), 0x85ebca6b) >>> 0) || 0x01000193;
+  }
+  return a.toString(36) + b.toString(36);
+}
+const STORE_HAS_ANY = id => {
+  try{ return !!localStorage.getItem(SAVE_KEY_OF(id)); }catch(e){ return false; }
+};
+
+//  로그인 — 없으면 새로 만들고, 안 되면 이 브라우저에만 저장합니다
+async function accountLogin(id, pw, makeNew){
+  ACCOUNT.busy = true; ACCOUNT.err = null;
+  try{
+    const ok = await CLOUD.init();
+    if(ok){
+      let uid;
+      try{
+        uid = makeNew ? await CLOUD.signUp(id, pw) : await CLOUD.signIn(id, pw);
+      }catch(e){
+        const c = String(e && e.code || "");
+        if(!makeNew && c.indexOf("user-not-found") >= 0){
+          ACCOUNT.err = "그런 아이디가 없습니다"; return false;
+        }
+        if(c.indexOf("wrong-password") >= 0 || c.indexOf("invalid-credential") >= 0){
+          ACCOUNT.err = "비밀번호가 다릅니다"; return false;
+        }
+        if(c.indexOf("email-already-in-use") >= 0){
+          ACCOUNT.err = "이미 쓰는 아이디입니다"; return false;
+        }
+        if(c.indexOf("weak-password") >= 0){
+          ACCOUNT.err = "비밀번호는 여섯 자 이상"; return false;
+        }
+        throw e;
+      }
+      ACCOUNT.id = id; ACCOUNT.uid = uid; ACCOUNT.mode = "cloud";
+      //  클라우드에 있는 저장을 이 브라우저로 내려받습니다
+      try{
+        const d = await CLOUD.get(uid);
+        if(d) localStorage.setItem(SAVE_KEY_OF(id), JSON.stringify(d));
+      }catch(e){}
+      return true;
+    }
+    //  ── 파이어베이스를 못 쓸 때 (설정이 없거나 접속 실패) ──
+    //  이 브라우저에만 저장합니다. 진짜 인증은 아니지만, 비밀번호를 확인해
+    //  남의 저장을 실수로 덮어쓰는 것만은 막습니다.
+    const pk = "oksang_pw_" + String(id).toLowerCase();
+    let known = null;
+    try{ known = localStorage.getItem(pk); }catch(e){}
+    const h = localPwHash(id, pw);
+    if(known === null){
+      if(!makeNew && STORE_HAS_ANY(id)){ ACCOUNT.err = "비밀번호를 확인할 수 없습니다"; return false; }
+      try{ localStorage.setItem(pk, h); }catch(e){}
+    } else if(known !== h){
+      ACCOUNT.err = makeNew ? "이미 쓰는 아이디입니다" : "비밀번호가 다릅니다";
+      return false;
+    } else if(makeNew){
+      ACCOUNT.err = "이미 쓰는 아이디입니다"; return false;
+    }
+    ACCOUNT.id = id; ACCOUNT.uid = null; ACCOUNT.mode = "local";
+    return true;
+  }catch(e){
+    ACCOUNT.err = "접속에 실패했습니다"; return false;
+  }finally{ ACCOUNT.busy = false; }
+}
+
 // ── 저장 — 전화박스에 닿을 때 브라우저에 적어둡니다 ─────────────
 //  브라우저 저장소를 못 쓰는 환경(미리보기 등)에서는 조용히 넘어갑니다.
 const SAVE_KEY = "oksang_save_v1";        // 예전 단일 저장 (한 번만 옮겨옵니다)
-const SLOT_KEY = i => "oksang_slot"+i;    // 캐릭터 슬롯 0~3
-const SLOT_N = 3;
-let curSlot = 0;                          // 지금 쓰고 있는 슬롯
+//  예전 슬롯 저장 — 옮겨오는 데만 씁니다
+const SLOT_KEY = i => "oksang_slot"+i;
 function saveAvailable(){
   try { const k="__t"; localStorage.setItem(k,"1"); localStorage.removeItem(k); return true; }
   catch(e){ return false; }
@@ -17475,7 +17737,6 @@ function saveGame(){
                acc:EQUIP.acc&&EQUIP.acc.name },
       owned: { w:ownedNames(WEAPONS), a:ownedNames(ARMORS),
                h:ownedNames(HEADS), c:ownedNames(ACCS) },
-      look: { hair:HERO_CUSTOM.hair, hairCol:HERO_CUSTOM.hairCol, skin:HERO_CUSTOM.skin },
       codex: CODEX.map(c=>[c.seen?1:0, c.kills|0]),
       visited: REGIONS.map(r=>[...r.visited]),
       boss: [...BOSS_DOWN],
@@ -17484,34 +17745,29 @@ function saveGame(){
       held: ITEMS_HELD.map(h=>[h.id, h.count]),
     };
     d.name = ST.name;
-    localStorage.setItem(SLOT_KEY(curSlot), JSON.stringify(d));
+    STORE.write(d);
     return true;
   }catch(e){ return false; }
 }
-function hasSave(slot){
+function hasSave(){
   if(!canSave()) return false;
-  try{ return !!localStorage.getItem(SLOT_KEY(slot===undefined?curSlot:slot)); }
-  catch(e){ return false; }
+  return STORE.has();
 }
-//  슬롯 훑어보기 — 타이틀에서 목록을 그리는 데 씁니다
-function slotInfo(i){
+//  저장 훑어보기 — 타이틀에서 「이어하기」 칸을 그리는 데 씁니다
+function saveInfo(){
   if(!canSave()) return null;
-  try{
-    const d = JSON.parse(localStorage.getItem(SLOT_KEY(i))||"null");
-    if(!d) return null;
-    return { name: d.name || "이름 없음", lv: (d.st&&d.st.lv)||1,
-             gold: d.gold|0, at: d.at||0,
-             boss: (d.boss&&d.boss.length)|0 };
-  }catch(e){ return null; }
+  const d = STORE.read();
+  if(!d) return null;
+  return { name: d.name || "이름 없음", lv: (d.st&&d.st.lv)||1,
+           gold: d.gold|0, at: d.at||0,
+           boss: (d.boss&&d.boss.length)|0 };
 }
-function clearSlot(i){
-  if(!canSave()) return;
-  try{ localStorage.removeItem(SLOT_KEY(i)); }catch(e){}
-}
+const slotInfo = () => saveInfo();          // 예전 이름을 부르는 곳이 있어 남겨둡니다
+function clearSlot(){ STORE.clear(); }
 function loadGame(){
   if(!canSave()) return false;
   let d;
-  try{ d = JSON.parse(localStorage.getItem(SLOT_KEY(curSlot))||"null"); }catch(e){ return false; }
+  d = STORE.read(); if(!d) return false;
   if(!d || d.v!==2){ clearSave(); return false; }   // 옛 형식은 버립니다
   Object.assign(ST, d.st);
   Object.assign(ABIL, d.abil);
@@ -17558,7 +17814,7 @@ function validCheckpoint(cp){
 }
 function clearSave(){
   if(!canSave()) return;
-  try{ localStorage.removeItem(SLOT_KEY(curSlot)); }catch(e){}
+  STORE.clear();
 }
 
 function restartRun(){                 // 능력·스탯·장비까지 전부 초기화
@@ -24870,10 +25126,9 @@ const GAME_SUB  = "ROOFTOP";
 const NAME_KEYS = "ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎ가나다라마바사아자차카타파하ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 function titleStart(slot, fresh){
-  curSlot = slot;
   TITLE.on = false;
   if(fresh){
-    clearSlot(slot);
+    STORE.clear();
     restartRun(); resetPlayer();
     setRegion(START.reg); useRoom(START.room);
     CHECKPOINT = { reg:START.reg, room:START.room, tx:START.tx, ty:START.ty+2 };
@@ -24886,14 +25141,81 @@ function titleStart(slot, fresh){
       setRegion(CP.reg); useRoom(CP.room);
       resetPlayer();
       toast = { text:"이어서 시작", sub:ST.name+" · LV "+ST.lv, col:"#8FE3E0", life:140 };
-    } else { titleStart(slot, true); return; }
+    } else { titleStart(0, true); return; }
   }
   audioInit(); musicCrossfade(1.6, true);
+}
+
+//  ── 로그인 화면 ──
+//  아이디·비밀번호를 직접 쳐서 넣습니다. 칸은 위아래로 옮깁니다.
+const LOGIN = { field:0, id:"", pw:"", msg:"", makeNew:false, busy:false };
+function loginOpen(){
+  TITLE.page = "login"; TITLE.sel = 0;
+  LOGIN.field = 0; LOGIN.msg = ""; LOGIN.busy = false;
+  LOGIN.id = ACCOUNT.id || "";
+  LOGIN.pw = "";
+  loginFocus();
+}
+function loginFocus(){
+  const f = LOGIN.field;
+  if(f > 1){ typeStop(); return; }              // 단추 줄에서는 입력칸을 놓습니다
+  typeStart({
+    kind: f===0 ? "id" : "password",
+    max:  f===0 ? 16 : 24,
+    value: f===0 ? LOGIN.id : LOGIN.pw,
+    onDone: (v, next)=>{
+      if(f===0) LOGIN.id = v; else LOGIN.pw = v;
+      LOGIN.field = Math.min(3, f+1); loginFocus(); sfx("tick");
+    },
+    onMove: (d)=>{
+      loginSync();
+      LOGIN.field = (LOGIN.field + d + 4) % 4;
+      LOGIN.msg = ""; loginFocus(); sfx("tick");
+    },
+    onCancel: ()=>{ typeStop(); TITLE.page = "main"; TITLE.sel = 0; sfx("tick"); },
+  });
+}
+function loginSync(){
+  if(!TYPE.on) return;
+  const v = typeValue();
+  if(LOGIN.field===0) LOGIN.id = v; else if(LOGIN.field===1) LOGIN.pw = v;
+}
+function loginSubmit(makeNew){
+  if(LOGIN.busy) return;
+  loginSync();
+  if(LOGIN.id.length < 2){ LOGIN.msg = "아이디는 두 자 이상"; sfx("deny"); return; }
+  if(LOGIN.pw.length < 4){ LOGIN.msg = "비밀번호는 네 자 이상"; sfx("deny"); return; }
+  LOGIN.busy = true; LOGIN.msg = makeNew ? "만드는 중…" : "확인 중…";
+  typeStop();
+  accountLogin(LOGIN.id, LOGIN.pw, makeNew).then(ok=>{
+    LOGIN.busy = false;
+    if(!ok){ LOGIN.msg = ACCOUNT.err || "실패했습니다"; sfx("deny"); loginFocus(); return; }
+    LOGIN.msg = "";
+    sfx("select");
+    //  저장이 있으면 이어하기/새로 시작을 고르고, 없으면 바로 이름 짓기로
+    if(hasSave()){ TITLE.page = "pick"; TITLE.sel = 0; }
+    else { nameOpen(); }
+  });
+}
+//  ── 이름 짓기 — 직접 타이핑 ──
+function nameOpen(){
+  TITLE.page = "name"; TITLE.name = "";
+  typeStart({ kind:"text", max:8, value:"",
+    onDone:(v)=>{
+      const nm = String(v).trim();
+      if(!nm.length){ nameOpen(); sfx("deny"); return; }
+      TITLE.name = nm; ST.name = nm;
+      sfx("select"); titleStart(0, true);
+    },
+    onCancel:()=>{ TITLE.page = "login"; loginOpen(); } });
 }
 
 function titleStep(){
   TITLE.t++;
   const P = TITLE;
+  //  입력칸이 열려 있으면 글자를 계속 받아옵니다
+  if(P.page==="login") loginSync();
+  if(P.page==="name" && TYPE.on) P.name = typeValue();
   //  확인 물음이 떠 있으면 그것부터
   if(P.ask){
     if(pressed.L||pressed.R){ P.askSel = P.askSel?0:1; sfx("tick"); }
@@ -24910,7 +25232,7 @@ function titleStep(){
     if(pressed.D) P.sel=(P.sel+1)%n;
     if(pressed.JUMP){
       sfx("select");
-      if(P.sel===0){ P.page="slots"; P.slot=0; }
+      if(P.sel===0){ loginOpen(); }
       else if(P.sel===1){ P.page="config"; P.sel=0; }
       else P.page="secret";
     }
@@ -24929,35 +25251,34 @@ function titleStep(){
     if(pressed.ATTACK||pressed.MENU){ P.page="main"; P.sel=1; sfx("tick"); }
     return;
   }
-  if(P.page==="slots"){
-    if(pressed.U||pressed.D) sfx("tick");
-    if(pressed.U) P.slot=(P.slot+SLOT_N-1)%SLOT_N;
-    if(pressed.D) P.slot=(P.slot+1)%SLOT_N;
-    if(pressed.ATTACK||pressed.MENU){ P.page="main"; P.sel=0; sfx("tick"); return; }
+  if(P.page==="login"){
+    const rows = 4;                              // 아이디 · 비밀번호 · 로그인 · 새 계정
+    if(LOGIN.busy) return;
+    if(pressed.U||pressed.D){
+      LOGIN.field = (LOGIN.field + (pressed.D?1:rows-1)) % rows;
+      LOGIN.msg = ""; loginFocus(); sfx("tick");
+    }
+    if(pressed.ATTACK||pressed.MENU){ typeStop(); P.page="main"; P.sel=0; sfx("tick"); return; }
     if(pressed.JUMP){
-      const info = slotInfo(P.slot);
-      if(!info){                                   // 빈 슬롯 — 새로 만들까요
-        P.ask = { msg:"새 캐릭터를 만들까요?",
-                  yes:()=>{ P.page="name"; P.name=""; P.sel=0; } };
-        P.askSel=0; sfx("select");
-      } else { P.page="pick"; P.sel=0; sfx("select"); }
+      if(LOGIN.field <= 1){ LOGIN.field = 2; typeStop(); sfx("tick"); }
+      else loginSubmit(LOGIN.field === 3);
     }
     return;
   }
-  if(P.page==="pick"){                             // 이어하기 / 지우기
+  if(P.page==="pick"){                             // 이어하기 / 새로 시작
     const n=2;
     if(pressed.U||pressed.D) sfx("tick");
     if(pressed.U) P.sel=(P.sel+n-1)%n;
     if(pressed.D) P.sel=(P.sel+1)%n;
-    if(pressed.ATTACK||pressed.MENU){ P.page="slots"; sfx("tick"); return; }
+    if(pressed.ATTACK||pressed.MENU){ loginOpen(); sfx("tick"); return; }
     if(pressed.JUMP){
-      if(P.sel===0){ sfx("select"); titleStart(P.slot, false); }
+      if(P.sel===0){ sfx("select"); titleStart(0, false); }
       else {
-        const nm = (slotInfo(P.slot)||{}).name || "";
-        P.ask = { msg:"["+nm+"] 을(를) 지웁니다. 정말로?",
+        const nm = ST.name || "";
+        P.ask = { msg:"["+nm+"] 을(를) 지우고 새로 시작합니다. 정말로?",
                   yes:()=>{
                     P.ask = { msg:"되돌릴 수 없습니다. 지울까요?",
-                              yes:()=>{ clearSlot(P.slot); P.page="slots"; sfx("deny"); } };
+                              yes:()=>{ STORE.clear(); nameOpen(); sfx("deny"); } };
                     P.askSel=1;
                   } };
         P.askSel=1; sfx("tick");
@@ -24965,23 +25286,9 @@ function titleStep(){
     }
     return;
   }
-  if(P.page==="name"){
-    const cols=13, rows=Math.ceil(NAME_KEYS.length/cols);
-    if(pressed.L) P.sel=(P.sel+NAME_KEYS.length-1)%NAME_KEYS.length;
-    if(pressed.R) P.sel=(P.sel+1)%NAME_KEYS.length;
-    if(pressed.U) P.sel=(P.sel-cols+NAME_KEYS.length)%NAME_KEYS.length;
-    if(pressed.D) P.sel=(P.sel+cols)%NAME_KEYS.length;
-    if(pressed.L||pressed.R||pressed.U||pressed.D) sfx("tick");
-    if(pressed.JUMP){
-      if(P.name.length<8){ P.name += NAME_KEYS[P.sel]; sfx("select"); }
-      else sfx("deny");
-    }
-    if(pressed.ATTACK){ P.name = P.name.slice(0,-1); sfx("tick"); }
-    if(pressed.SPECIAL || pressed.MENU){
-      if(P.name.length===0){ sfx("deny"); return; }
-      ST.name = P.name;
-      sfx("select"); titleStart(P.slot, true);
-    }
+  if(P.page==="name"){                             // 직접 타이핑합니다
+    if(pressed.ATTACK||pressed.MENU){ typeStop(); loginOpen(); sfx("tick"); return; }
+    if(pressed.JUMP){ typeDone(); }
     return;
   }
 }
@@ -25077,57 +25384,73 @@ function drawTitle(){
     ctx.font="7px "+FONT; ctx.fillStyle="#3E4660";
     ctx.fillText("아무 키나", UIW/2, UIH*0.56+32);
   }
-  else if(P.page==="slots" || P.page==="pick"){
+  else if(P.page==="login"){
     ctx.font="10px "+FONT; ctx.fillStyle=C.paper;
-    ctx.fillText("캐릭터 선택", UIW/2, 14);
-    const bw=210, bx=Math.round((UIW-bw)/2);
-    //  아래 안내줄까지 넉넉히 남기고 칸 높이를 잡습니다
-    const top=32, foot=26;
-    const h0=Math.max(22, Math.min(30, Math.floor((UIH-top-foot)/SLOT_N)-6));
-    for(let i=0;i<SLOT_N;i++){
-      const by=top+i*(h0+6), info=slotInfo(i), cur=(i===P.slot);
-      box(bx, by, bw, h0);
-      if(cur){ ctx.strokeStyle="#8FE3E0"; ctx.strokeRect(bx+.5,by+.5,bw-1,h0-1); }
-      ctx.textAlign="left";
-      ctx.font="9px "+FONT; ctx.fillStyle = cur ? C.paper : C.dim;
-      ctx.fillText(info ? info.name : "— 빈 슬롯 —", bx+10, by+6);
-      ctx.font="7px "+FONT; ctx.fillStyle="#4E5876";
-      ctx.fillText(info ? ("LV "+info.lv+" · "+wonText(info.gold)+" · 보스 "+info.boss+"/16")
-                        : "새 캐릭터를 만들 수 있습니다", bx+10, by+18);
-      ctx.textAlign="right";
-      ctx.font="7px "+FONT; ctx.fillStyle="#3E4660";
-      ctx.fillText("슬롯 "+(i+1), bx+bw-10, by+6);
-      ctx.textAlign="center";
+    ctx.fillText("로그인", UIW/2, 16);
+    const bw=196, bx=Math.round((UIW-bw)/2), top=36;
+    box(bx-6, top-8, bw+12, 96);
+    ctx.textAlign="left"; ctx.font="8px "+FONT;
+    ctx.fillStyle = LOGIN.field===0 ? "#8FE3E0" : "#5E6884";
+    ctx.fillText("아이디", bx, top);
+    drawField(bx+40, top-3, bw-40, 14, LOGIN.id, LOGIN.field===0, "영문·숫자", false);
+    ctx.fillStyle = LOGIN.field===1 ? "#8FE3E0" : "#5E6884";
+    ctx.fillText("비밀번호", bx, top+22);
+    drawField(bx+40, top+19, bw-40, 14, LOGIN.pw, LOGIN.field===1, "네 자 이상", true);
+    ctx.textAlign="center";
+    opt2("로그인",     bx+bw*0.28, top+48, LOGIN.field===2);
+    opt2("새 계정 만들기", bx+bw*0.74, top+48, LOGIN.field===3);
+    //  안내와 알림
+    ctx.font="7px "+FONT;
+    if(LOGIN.msg){ ctx.fillStyle = LOGIN.busy ? "#8FE3E0" : "#E8646E";
+                   ctx.fillText(LOGIN.msg, UIW/2, top+68); }
+    else {
+      ctx.fillStyle="#4E5876";
+      ctx.fillText("계정 하나에 캐릭터 하나입니다", UIW/2, top+68);
     }
-    if(P.page==="pick"){
-      const by=top+P.slot*(h0+6);
-      const mw=104, mx=bx+bw-mw-6, my=by+h0+2;
-      box(mx, my, mw, 34);
-      opt2("이어하기", mx+mw/2, my+5,  P.sel===0);
-      opt2("지우기",   mx+mw/2, my+19, P.sel===1);
-    }
-    ctx.font="7px "+FONT; ctx.fillStyle="#6A749A";
+    //  지금 어디에 저장되는지 — 오른쪽 위에 작게
+    { const cloud = !!FIREBASE_CONFIG && !CLOUD.failed;
+      ctx.textAlign="right"; ctx.font="7px "+FONT;
+      ctx.fillStyle = cloud ? "#5EA88A" : "#7A6A50";
+      ctx.fillText(cloud ? "● 클라우드 저장" : "● 이 기기에만 저장", UIW-8, 8);
+      ctx.textAlign="center"; }
     ctx.fillStyle="rgba(9,12,20,.8)"; ctx.fillRect(0, UIH-18, UIW, 14);
-    ctx.fillStyle="#8A94BA";
+    ctx.fillStyle="#8A94BA"; ctx.font="7px "+FONT;
+    ctx.fillText("직접 입력 · ↑↓ 칸 옮기기 · Enter 다음 · Esc 뒤로", UIW/2, UIH-15);
+  }
+  else if(P.page==="pick"){
+    ctx.font="10px "+FONT; ctx.fillStyle=C.paper;
+    ctx.fillText("이어서 하시겠습니까?", UIW/2, 16);
+    const info = saveInfo();
+    const bw=210, bx=Math.round((UIW-bw)/2), by=40;
+    box(bx, by, bw, 34);
+    ctx.textAlign="left";
+    ctx.font="9px "+FONT; ctx.fillStyle=C.paper;
+    ctx.fillText(info ? info.name : "—", bx+10, by+7);
+    ctx.font="7px "+FONT; ctx.fillStyle="#4E5876";
+    ctx.fillText(info ? ("LV "+info.lv+" · "+wonText(info.gold)+" · 보스 "+info.boss+"/16")
+                      : "저장된 기록이 없습니다", bx+10, by+20);
+    ctx.textAlign="right"; ctx.fillStyle="#3E4660";
+    ctx.fillText(ACCOUNT.id || "", bx+bw-10, by+7);
+    ctx.textAlign="center";
+    const mw=120, mx=Math.round((UIW-mw)/2), my=by+44;
+    box(mx, my, mw, 34);
+    opt2("이어하기",   mx+mw/2, my+5,  P.sel===0);
+    opt2("새로 시작",  mx+mw/2, my+19, P.sel===1);
+    ctx.fillStyle="rgba(9,12,20,.8)"; ctx.fillRect(0, UIH-18, UIW, 14);
+    ctx.fillStyle="#8A94BA"; ctx.font="7px "+FONT;
     ctx.fillText("↑↓ 고르기 · 점프 확인 · 공격 뒤로", UIW/2, UIH-15);
   }
   else if(P.page==="name"){
     ctx.font="10px "+FONT; ctx.fillStyle=C.paper;
-    ctx.fillText("이름을 지어주세요", UIW/2, 18);
-    const nm = P.name + (((t>>4)&1) ? "_" : " ");
-    box(UIW/2-70, 34, 140, 20);
-    ctx.font="11px "+FONT; ctx.fillStyle="#8FE3E0";
-    ctx.fillText(nm, UIW/2, 38);
-    const cols=13, cw=17, ch=13;
-    const gx=Math.round((UIW-cols*cw)/2), gy=62;
-    for(let i=0;i<NAME_KEYS.length;i++){
-      const cx=gx+(i%cols)*cw, cy=gy+((i/cols)|0)*ch, cur=(i===P.sel);
-      if(cur){ ctx.fillStyle="rgba(143,227,224,.22)"; ctx.fillRect(cx, cy, cw-2, ch-1); }
-      ctx.font="9px "+FONT; ctx.fillStyle = cur ? C.paper : "#5E6884";
-      ctx.fillText(NAME_KEYS[i], cx+(cw-2)/2, cy+2);
-    }
-    ctx.font="7px "+FONT; ctx.fillStyle="#3E4660";
-    ctx.fillText("점프 넣기 · 공격 지우기 · 특수/메뉴 완성", UIW/2, UIH-14);
+    ctx.fillText("이름을 지어주세요", UIW/2, 22);
+    const bw=150, bx=Math.round((UIW-bw)/2);
+    ctx.textAlign="center";
+    drawField(bx, 44, bw, 20, P.name, true, "여덟 자까지", false);
+    ctx.font="7px "+FONT; ctx.fillStyle="#4E5876";
+    ctx.fillText("글쇠로 직접 칩니다. 한글도 됩니다.", UIW/2, 72);
+    ctx.fillStyle="rgba(9,12,20,.8)"; ctx.fillRect(0, UIH-18, UIW, 14);
+    ctx.fillStyle="#8A94BA"; ctx.font="7px "+FONT;
+    ctx.fillText("Enter 로 확정 · Esc 뒤로", UIW/2, UIH-15);
   }
   else if(P.page==="config"){
     ctx.font="10px "+FONT; ctx.fillStyle=C.paper;
@@ -26797,14 +27120,16 @@ planElevator();
   giveConsumable("hp1", 3);
   giveConsumable("mp1", 2);
 })();
-//  예전 단일 저장이 남아 있으면 1번 슬롯으로 한 번만 옮겨옵니다
+//  예전 저장(단일·슬롯)이 남아 있으면 「guest」 계정 칸으로 한 번만 옮겨옵니다.
+//  로그인하면 그 계정 칸을 쓰므로 예전 기록과 섞이지 않습니다.
 try{
   if(canSave()){
-    const old = localStorage.getItem(SAVE_KEY);
-    if(old && !localStorage.getItem(SLOT_KEY(0))){
-      localStorage.setItem(SLOT_KEY(0), old);
-      localStorage.removeItem(SAVE_KEY);
+    const gk = SAVE_KEY_OF("guest");
+    if(!localStorage.getItem(gk)){
+      const old = localStorage.getItem(SAVE_KEY) || localStorage.getItem(SLOT_KEY(0));
+      if(old) localStorage.setItem(gk, old);
     }
+    localStorage.removeItem(SAVE_KEY);
   }
 }catch(err){}
 //  게임은 타이틀 화면에서 시작합니다 (TITLE.on = true)
