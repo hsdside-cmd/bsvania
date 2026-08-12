@@ -15009,11 +15009,24 @@ function expNeed(L){
   const l = Math.max(1, L|0);
   return Math.round(24 * Math.pow(l, 1.85));
 }
+//  ── 한 레벨에 몇 마리가 필요한가 ──
+//  뒤로 갈수록 배로 늘어납니다. 앞은 쑥쑥 오르고 뒤는 진득해집니다.
+//    1~10   50마리      11~25  100마리
+//   26~40  200마리      41~60  400마리
+//   61~80  800마리      81~    1600마리
+function monPerLevel(L){
+  const l = Math.max(1, L|0);
+  if(l <= 10) return 50;
+  if(l <= 25) return 100;
+  if(l <= 40) return 200;
+  if(l <= 60) return 400;
+  if(l <= 80) return 800;
+  return 1600;
+}
+const MON_PER_LEVEL = 50;                 // 옛 이름 — 참고용으로 남깁니다
 //  그 레벨 몬스터 한 마리가 주는 경험치.
-//  「같은 레벨 몬스터 50마리를 잡으면 한 레벨」이 되도록 맞춥니다.
-const MON_PER_LEVEL = 50;
 function expReward(L){
-  return Math.max(1, Math.round(expNeed(L) / MON_PER_LEVEL));
+  return Math.max(1, Math.round(expNeed(L) / monPerLevel(L)));
 }
 
 const ZONE_LV = {
@@ -33791,6 +33804,76 @@ function drawAreaMap(){
     if(rm.void) continue;
     drawRoomCell(rg, rm, ox+G.cx[rm.c]*S, oy+G.cy[rm.r]*S,
                  G.colW[rm.c]*S, G.rowH[rm.r]*S, S, {});
+  }
+
+  //  ── 다른 영역으로 나가는 칸 ──
+  //  어느 곳으로 이어지는지 칸 옆에 이름을 적습니다.
+  //  가 본 적 없는 방은 알려주지 않습니다.
+  {
+    //  이 영역에서 밖으로 나가는 문을 모읍니다
+    const outs = [];
+    for(const L of REGION_LINKS){
+      for(const [me, you] of [[L.a, L.b], [L.b, L.a]]){
+        if(me.reg !== rg.id) continue;
+        const other = REGIONS[you.reg];
+        if(!other) continue;
+        outs.push({ c:me.c, r:me.r, side:me.side, name:other.name, mini:!!other.mini });
+      }
+    }
+    //  균열로 들어가는 차원문도 함께
+    for(const rm of rg.rooms){
+      if(rm.void || !rm.gate) continue;
+      const to = REGIONS.find(x=>x.key === rm.gate);
+      if(to) outs.push({ c:rm.c, r:rm.r, side:"e", name:to.name,
+                         mini:!!to.mini, gate:true });
+    }
+    //  같은 곳으로 가는 문이 여럿이면 한 번만 적습니다
+    const once = [];
+    for(const o of outs){
+      if(once.some(x=>x.name===o.name && x.c===o.c && x.r===o.r)) continue;
+      once.push(o);
+    }
+    outs.length = 0; outs.push(...once);
+    ctx.font="6px "+FONT; ctx.textBaseline="middle";
+    const put = [];                       // 이미 글자를 놓은 자리
+    for(const o of outs){
+      const rm = rg.rooms.find(x=>x.c===o.c && x.r===o.r);
+      if(!rm || rm.void) continue;
+      if(!rg.visited.has(rg.rooms.indexOf(rm))) continue;   // 가 본 방만
+      const x0 = ox + G.cx[rm.c]*S, y0 = oy + G.cy[rm.r]*S;
+      const w0 = G.colW[rm.c]*S, h0 = G.rowH[rm.r]*S;
+      //  나가는 쪽에 글자를 붙입니다
+      let tx, ty, align;
+      if(o.side === "w"){ tx = x0 - 3;      ty = y0 + h0/2; align = "right"; }
+      else if(o.side === "e"){ tx = x0+w0+3; ty = y0 + h0/2; align = "left"; }
+      else if(o.side === "n"){ tx = x0+w0/2; ty = y0 - 5;    align = "center"; }
+      else { tx = x0+w0/2; ty = y0 + h0 + 5; align = "center"; }
+      //  같은 자리에 겹치면 한 줄 내립니다
+      let key = Math.round(tx/6)+","+Math.round(ty/6), guard = 0;
+      while(put.indexOf(key) >= 0 && ++guard < 4){
+        ty += 7; key = Math.round(tx/6)+","+Math.round(ty/6);
+      }
+      put.push(key);
+      //  이름 — 균열은 보랏빛, 다음 영역은 청록빛
+      const nm = fitText(o.name, 62);
+      const col = o.mini ? "#B080E8" : "#8FE3E0";
+      ctx.textAlign = align;
+      //  글자 뒤에 어두운 판을 깔아 읽기 쉽게
+      const tw = ctx.measureText(nm).width;
+      const bx = align === "right" ? tx - tw - 2
+               : align === "left"  ? tx - 1 : tx - tw/2 - 2;
+      ctx.fillStyle = "rgba(9,12,20,.82)";
+      ctx.fillRect(bx, ty-4, tw+4, 9);
+      ctx.fillStyle = col;
+      ctx.fillText(nm, tx, ty);
+      //  칸 쪽으로 작은 화살표
+      ctx.fillStyle = col;
+      if(o.side === "w")      ctx.fillRect(x0-3, y0+h0/2-1, 2, 2);
+      else if(o.side === "e") ctx.fillRect(x0+w0+1, y0+h0/2-1, 2, 2);
+      else if(o.side === "n") ctx.fillRect(x0+w0/2-1, y0-3, 2, 2);
+      else                    ctx.fillRect(x0+w0/2-1, y0+h0+1, 2, 2);
+    }
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
   }
   return oy+gh+10;
 }
